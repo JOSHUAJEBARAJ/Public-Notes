@@ -231,7 +231,7 @@ ping postgres
 
 They tried the same thing for the Kubernetes but they are still not able to ping the service
 
-``bash
+```bash
 ping kubernetes
 ```
 
