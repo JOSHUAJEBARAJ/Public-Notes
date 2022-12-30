@@ -282,3 +282,376 @@ Now in the second part of the challenge, they have to find the upgrade of the ve
 
 The team decided to edit the manifest and change the version from v1 to v2 by changing the image name this fixed the issue
 
+
+## Team Redhat 
+
+
+The RedHat team started with the investigation by checking the status of the nodes
+
+```bash
+export KUBECONFIG=/etc/kubernetes/admin.conf
+```
+
+## Unreachable API server
+
+```bash
+kubectl get nodes
+```
+
+They got the below error message
+
+```bash
+The connection to the server localhost:8080 was refused - did you specify the right host or port?
+```
+
+
+> The team configured the alias for the kubectl command
+
+```bash
+vi ~/.aliases
+```
+
+```bash
+alias oc=kubectl
+```
+
+```bash
+source ~/.aliases
+```
+
+The team decided to verify the ip address of the API server using ip addr command
+
+```bash
+ip addr
+```
+
+The team decided to check the process running on the host 
+
+```bash
+ps -ef | grep kube
+```
+
+Looks like the api server is not running on the host. The team verified the presence of the kube-apiserver manifest file in the /etc/kubernetes/manifests directory
+
+```bash
+ls -l /etc/kubernetes/manifests
+```
+
+And also looked at the api server manifest file , everything looks fine .
+
+The team decided to check the logs of the kubelet service
+
+```bash
+journalctl -flu kubelet
+```
+They found out there is an issue with starting the api server
+
+The team further decided to dig deep into the kube api server manifest file
+
+```bash
+cat /etc/kubernetes/manifests/kube-apiserver.yaml
+```
+
+The team checked for the `image` name and verified that the image is a valid image
+
+
+The team decided to look at the logs of the kube api server
+
+```bash
+cd /var/log/containers
+```
+
+```bash
+tail -f kube-apiserver-*.log
+```
+
+## Broken etcd server
+
+The team found out that the api server is not able to connect to the etcd server
+
+The team decided to check the etcd logs
+
+```bash
+tail -f etcd-*.log
+```
+On looking at the logs they got the below error message
+
+```bash
+no leader (status code 503)
+```
+
+The team decided to check the etcd manifest file
+
+```bash
+vim /etc/kubernetes/manifests/etcd.yaml
+```
+
+They found out that the `--listen-client-urls` parameter is not set to the correct value , they fixed the issue by removing the localhost and keep only the private ip address
+
+After making the changes they found  out the etcd server is running fine
+
+```bash
+tail -f etcd-*.log
+```
+
+The team decided to change the `--etcd-servers` parameter in the kube api server manifest file to the private ip address of the etcd server
+
+After looking at the logs of the kube api server they found out that the api server is still not running fine. 
+
+They tried to connect to the etcd using the netcat command
+
+```bash
+nc -z 10.80.73.137 2379
+```
+
+They found out it is working fine
+
+But after some time they found out that the etcd server is still  not running fine and showing the same error message
+
+
+The team decided to use the etcdctl command to check the status of the etcd server
+
+```bash
+export ETCDCTL_API=3
+export ETCDCTL_CA_FILE=/etc/kubernetes/pki/etcd/ca.crt
+export ETCDCTL_CERT_FILE=/etc/kubernetes/pki/etcd/server.crt
+export ETCDCTL_KEY_FILE=/etc/kubernetes/pki/etcd/server.key
+```
+
+```bash
+etcdctl get /registry/services/specs/default/kubernetes
+```
+https://lzone.de/cheat-sheet/etcd
+
+
+The team found out that the etcdctl is not able to connect to the etcd server due to the previous changes in the etcd manifest file. 
+
+They decided to change the `--listen-client-urls` parameter in the etcd manifest file to the correct value ie with localhost and private ip 
+
+They repeated the same for the kube api server manifest file 
+
+Now on trying to connect to the etcd server using the etcdctl command they found out that the etcd server is still not running fine
+
+The team decided to check the health of the etcd server using the etcdctl command
+
+```bash
+etcdctl endpoint health
+```
+
+They found out that the etcd server is not healthy
+
+The team again checked the logs , but they could not find anything interesting. 
+
+
+The team decided to pick up the hints, on sshing to the worker node they found there are some hints files present there.
+
+On looking at the first hint they found the below text 
+
+```bash 
+#Hint 1
+- Quorum praesentia sufficit
+```
+
+The team figured out that etcd is currently working in the HA mode with multiple members, they decided to fix the issue by removing the defective etcd member from the cluster.
+
+On looking at the logs they found one of the etcd member is not running fine
+
+They decided to remove the etcd member from the cluster
+
+```bash
+etcdctl -C https://<surving host IP address>:2379 --ca-file=/etc/etcd/ca.crt --cert-file=/etc/etcd/peer.crt member remove <defective member ID>
+```
+They got the below error message
+
+```bash
+Unknown short flag '-C'
+```
+
+The team fixed the iuu by changing the `-C` parameter to `--endpoints`
+
+```bash
+etcdctl --endpoints=https://<surving host IP address>:2379  member remove <defective member ID>
+```
+
+The team decided to look upon the another hint on looking at the second hint they found the below text
+
+```bash
+- `etcd` snapshot stored in `/var/etcd.db`
+```
+
+The team decided to restore the etcd snapshot 
+
+```bash
+etcdctl snapshot restore /var/etcd.db
+```
+
+> They got the error on trying to restore the snapshot
+
+They tried to list the members of the etcd cluster
+
+```bash
+etcdctl member list
+```
+
+> They again got the error on trying to list the members of the etcd cluster
+
+The team tried to restart the etcd server by moving the etcd manifest file to the /tmp directory
+
+```bash
+mv /etc/kubernetes/manifests/etcd.yaml /tmp
+```
+
+Now they again moved the etcd manifest file to the /etc/kubernetes/manifests directory
+
+```bash
+mv /tmp/etcd.yaml /etc/kubernetes/manifests
+```
+
+Now the team tried to restore the etcd snapshot
+
+```bash
+etcdctl snapshot restore /var/etcd.db
+```
+
+They got the below message. 
+```bash
+Deprecated; Use "etcdutl snapshot restore" instead.
+```
+
+The team decided to remove the existing etcd data directory and restore the snapshot
+
+```bash
+rm -rf /var/lib/etcd
+```
+
+```bash
+etcdutl snapshot restore /var/etcd.db --data-dir /var/lib/etcd
+```
+
+Now the team tried to list the members of the etcd cluster
+
+```bash
+etcdctl member list
+```
+
+Now they are able to list down the members of the etcd cluster
+
+Now on running the below kubectl command they found out that they are not able to connect to the API server
+
+```bash
+kubectl get nodes
+```
+
+Now the team decided to check the manifest of the kube api server
+
+```bash
+cat /etc/kubernetes/manifests/kube-apiserver.yaml
+```
+
+They couldn't find anything useful . 
+
+They tried to look at the logs of the kube api server
+
+```bash
+tail /var/log/containers/kube-apiserver-*.log
+```
+
+They found out that everything is fine with the kube api server
+
+Now again they tried to connect to the API server using the kubectl command
+
+```bash
+kubectl get nodes
+```
+
+Now they are able to list down the nodes.
+
+Now the team decided to look at the all running pods
+
+```bash 
+kubectl get pods --all-namespaces
+```
+
+They found out at the cilium pod is restarting every 5 seconds
+
+But they are able to access the application pod successfully. 
+
+## Corrupted CNI
+
+Now they tried to solve the challenge by replacing the application image with version 2
+
+On editing the `image` tag in the deployment manifest file they found out that the application is not running fine
+
+They found at worker node 2 is not running fine. They decided to override the scheduling of the application pod to worker node 1 using Nodeselector.
+
+On looking at the pod status , they found out it is still in the pending state
+
+On describing the worker node 2 they found at the kubelet is not running fine
+
+The team decided to ssh into worker node 2 and check the kubelet logs
+
+On looking upon the status of the kubelet they found out that the kubelet is running fine
+
+```
+systemctl status kubelet
+```
+
+On looking at the logs of the kubelet they found nothing interesting , so they decided to restart the kubelet
+
+```bash
+systemctl restart kubelet
+```
+
+The team decided to look at the events on the kubernetes, they found out there is some issue with the CNI plugin
+
+```bash
+kubectl get events 
+```
+
+The team decided to look at the Hints file on worker node 2 , they found the below text
+
+```bash
+Its not CNI, there's no way its CNI
+, it was CNI.
+```
+
+On looking at the other hints file they found the below text
+
+```bash
+In `/opt/cni/bin` there are a lot of files. Running `loopback`, gives an output that's wild
+```
+
+On looking at the `/opt/cni/bin` directory they found out there are couple of files , they decided to run the `loopback` file
+
+```bash
+/opt/cni/bin/loopback
+```
+On running the `loopback` file they got the below message
+
+```bash
+CNI bridge plugin version 0.8.2
+```
+
+On running the `./loopback.bak` file they got the below message
+
+```bash
+CNI loopback plugin version 0.8.2
+```
+
+The team decided to replace the `loopback` file with the `loopback.bak` file
+
+```bash
+mv /opt/cni/bin/loopback.bak /opt/cni/bin/loopback
+```
+
+On replacing the file it worked fine , they were able to access the application pod successfully.
+
+
+
+
+
+
+
+
+
+
